@@ -1,52 +1,53 @@
 import os
 import threading
 import sqlite3
-from flask import Flask
+from flask import Flask, request
+import stripe
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
-
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
-# =========================
-# ENV VARIABLES
-# =========================
+# ================= ENV =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+BASE_URL = os.getenv("BASE_URL")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+stripe.api_key = STRIPE_SECRET_KEY
 
-# =========================
-# FLASK WEB SERVER
-# (Fix Render free port issue)
-# =========================
-web_app = Flask(__name__)
+# ================= FLASK =================
+app_web = Flask(__name__)
 
-@web_app.route("/")
+@app_web.route("/")
 def home():
-    return "Telegram AI Bot Running"
+    return "AI Bot Running 24/7"
+
+@app_web.route("/stripe-webhook", methods=["POST"])
+def stripe_webhook():
+    data = request.json
+
+    try:
+        event = stripe.Event.construct_from(data, stripe.api_key)
+
+        if event["type"] == "checkout.session.completed":
+            session = event["data"]["object"]
+            user_id = int(session["metadata"]["user_id"])
+            activate_vip(user_id)
+
+    except Exception as e:
+        return str(e), 400
+
+    return "OK", 200
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    app_web.run(host="0.0.0.0", port=port)
 
 threading.Thread(target=run_web).start()
 
-# =========================
-# DATABASE
-# =========================
+# ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -57,248 +58,116 @@ CREATE TABLE IF NOT EXISTS users (
     usage_count INTEGER DEFAULT 0
 )
 """)
-
 conn.commit()
 
-# =========================
-# SETTINGS
-# =========================
+# ================= SETTINGS =================
 FREE_LIMIT = 5
 
-STRIPE_LINK = "https://buy.stripe.com/aFadR84afcNQ2N59dSgA802"
-
-# =========================
-# MEMORY
-# =========================
-chat_memory = {}
-
-# =========================
-# DATABASE FUNCTIONS
-# =========================
-def get_user(user_id):
-    cursor.execute(
-        "SELECT * FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-    return cursor.fetchone()
-
-def create_user(user_id):
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id, is_vip, usage_count) VALUES (?, 0, 0)",
-        (user_id,)
-    )
+# ================= DB FUNCTIONS =================
+def create_user(uid):
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
     conn.commit()
 
-def get_usage(user_id):
-    cursor.execute(
-        "SELECT usage_count FROM users WHERE user_id = ?",
-        (user_id,)
-    )
+def is_vip(uid):
+    cursor.execute("SELECT is_vip FROM users WHERE user_id=?", (uid,))
+    r = cursor.fetchone()
+    return r and r[0] == 1
 
-    result = cursor.fetchone()
-
-    if result:
-        return result[0]
-
-    return 0
-
-def increase_usage(user_id):
-    cursor.execute(
-        "UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?",
-        (user_id,)
-    )
+def activate_vip(uid):
+    cursor.execute("UPDATE users SET is_vip=1 WHERE user_id=?", (uid,))
     conn.commit()
 
-def is_vip(user_id):
-    cursor.execute(
-        "SELECT is_vip FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-
-    result = cursor.fetchone()
-
-    if result:
-        return result[0] == 1
-
-    return False
-
-def activate_vip(user_id):
-    cursor.execute(
-        "UPDATE users SET is_vip = 1 WHERE user_id = ?",
-        (user_id,)
-    )
+def add_usage(uid):
+    cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id=?", (uid,))
     conn.commit()
 
-# =========================
-# START COMMAND
-# =========================
+def get_usage(uid):
+    cursor.execute("SELECT usage_count FROM users WHERE user_id=?", (uid,))
+    r = cursor.fetchone()
+    return r[0] if r else 0
+
+# ================= STRIPE PAYMENT (RM15/month) =================
+def create_checkout_session(uid):
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="payment",
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {
+                    "name": "VIP Access (RM15/month)"
+                },
+                "unit_amount": 300  # ≈ RM15
+            },
+            "quantity": 1
+        }],
+        success_url=BASE_URL,
+        cancel_url=BASE_URL,
+        metadata={"user_id": str(uid)}
+    )
+    return session.url
+
+# ================= TELEGRAM HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.message.from_user.id
-    create_user(user_id)
+    uid = update.message.from_user.id
+    create_user(uid)
 
     keyboard = [
         [InlineKeyboardButton("💬 Chat AI", callback_data="chat")],
-        [InlineKeyboardButton("💰 VIP", callback_data="vip")],
-        [InlineKeyboardButton("📊 Status", callback_data="status")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
+        [InlineKeyboardButton("💰 VIP RM15/month", callback_data="vip")],
+        [InlineKeyboardButton("📊 Status", callback_data="status")]
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        "🤖 AI BOT READY",
-        reply_markup=reply_markup
+        "🤖 AI BOT READY\n\nFree limit: 5 messages",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# =========================
-# BUTTON HANDLER
-# =========================
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
 
-    query = update.callback_query
-    await query.answer()
+    uid = q.from_user.id
+    create_user(uid)
 
-    user_id = query.from_user.id
+    if q.data == "vip":
+        url = create_checkout_session(uid)
+        await q.message.reply_text(f"💰 Pay RM15/month:\n{url}")
 
-    create_user(user_id)
+    elif q.data == "status":
+        status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
+        await q.message.reply_text(
+            f"Status: {status}\nUsage: {get_usage(uid)}"
+        )
 
-    if query.data == "vip":
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    text = update.message.text
 
-        keyboard = [
-            [InlineKeyboardButton("💳 Pay VIP", url=STRIPE_LINK)],
-            [InlineKeyboardButton("I Paid", callback_data="paid")]
+    create_user(uid)
+
+    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+        await update.message.reply_text("❌ Free limit reached. Upgrade VIP RM15/month.")
+        return
+
+    add_usage(uid)
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": text}
         ]
+    )
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(response.choices[0].message.content)
 
-        await query.message.reply_text(
-            "💰 VIP PLAN\n\nRM10/month",
-            reply_markup=reply_markup
-        )
-
-    elif query.data == "paid":
-
-        activate_vip(user_id)
-
-        await query.message.reply_text(
-            "✅ VIP Activated!"
-        )
-
-    elif query.data == "status":
-
-        status = "VIP 💎" if is_vip(user_id) else "FREE 🆓"
-
-        usage = get_usage(user_id)
-
-        await query.message.reply_text(
-            f"📊 STATUS\n\n"
-            f"Plan: {status}\n"
-            f"Messages Used: {usage}"
-        )
-
-    elif query.data == "chat":
-
-        await query.message.reply_text(
-            "💬 Send me a message."
-        )
-
-    elif query.data == "help":
-
-        await query.message.reply_text(
-            "ℹ️ HELP MENU\n\n"
-            "• Send message to chat AI\n"
-            "• VIP removes limits\n"
-            "• Status checks account"
-        )
-
-# =========================
-# CHAT HANDLER
-# =========================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.message.from_user.id
-    user_text = update.message.text
-
-    create_user(user_id)
-
-    if not is_vip(user_id):
-
-        usage = get_usage(user_id)
-
-        if usage >= FREE_LIMIT:
-
-            await update.message.reply_text(
-                "❌ Free limit reached.\n"
-                "Upgrade to VIP."
-            )
-
-            return
-
-    increase_usage(user_id)
-
-    # =========================
-    # MEMORY
-    # =========================
-    if user_id not in chat_memory:
-        chat_memory[user_id] = []
-
-    chat_memory[user_id].append({
-        "role": "user",
-        "content": user_text
-    })
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a smart, friendly, short Telegram AI assistant."
-            )
-        }
-    ] + chat_memory[user_id][-10:]
-
-    try:
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=300
-        )
-
-        reply = response.choices[0].message.content
-
-        chat_memory[user_id].append({
-            "role": "assistant",
-            "content": reply
-        })
-
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-
-        await update.message.reply_text(
-            f"Error:\n{str(e)}"
-        )
-
-# =========================
-# RUN TELEGRAM BOT
-# =========================
+# ================= RUN BOT =================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-
-app.add_handler(
-    CallbackQueryHandler(button_handler)
-)
-
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_message
-    )
-)
+app.add_handler(CallbackQueryHandler(buttons))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 print("Bot running...")
-
 app.run_polling()
