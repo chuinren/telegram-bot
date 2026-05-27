@@ -152,14 +152,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     add_usage(uid)
 
-   response = client.chat.completions.create(
+response = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": text}
     ],
-    temperature=0.7,
-    max_tokens=200
+    max_tokens=150
 )
     await update.message.reply_text(response.choices[0].message.content)
 
