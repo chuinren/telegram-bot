@@ -1,36 +1,51 @@
 import os
+import threading
+from flask import Flask
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
-# ================= ENV KEYS (SAFE) =================
+# ================= ENV =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-# ================= SYSTEM DATA =================
+# ================= SIMPLE WEB SERVER (FIX RENDER PORT ERROR) =================
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    app_web.run(host="0.0.0.0", port=10000)
+
+threading.Thread(target=run_web).start()
+
+# ================= BOT DATA =================
 VIP_USERS = set()
 user_usage = {}
 FREE_LIMIT = 5
 
 STRIPE_LINK = "https://buy.stripe.com/aFadR84afcNQ2N59dSgA802"
 
-# ================= START MENU =================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("💬 Chat AI", callback_data="chat")],
-        [InlineKeyboardButton("💰 VIP Plan", callback_data="vip")],
+        [InlineKeyboardButton("💰 VIP", callback_data="vip")],
         [InlineKeyboardButton("📊 Status", callback_data="status")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
     ]
 
     await update.message.reply_text(
-        "🤖 AI BOT READY\nChoose an option:",
+        "🤖 AI BOT READY",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= BUTTON HANDLER =================
+# ================= BUTTONS =================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -40,11 +55,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "vip":
         keyboard = [
             [InlineKeyboardButton("💳 Pay VIP", url=STRIPE_LINK)],
-            [InlineKeyboardButton("I already paid", callback_data="paid")]
+            [InlineKeyboardButton("I Paid", callback_data="paid")]
         ]
 
         await query.message.reply_text(
-            "💰 VIP PLAN\nRM10/month\n\nClick to pay:",
+            "💰 VIP PLAN",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -54,20 +69,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "status":
         status = "VIP 💎" if user_id in VIP_USERS else "FREE 🆓"
-        await query.message.reply_text(f"📊 Status: {status}")
-
-    elif query.data == "chat":
-        await query.message.reply_text("💬 Send me a message to chat with AI.")
+        await query.message.reply_text(f"Status: {status}")
 
     elif query.data == "help":
-        await query.message.reply_text(
-            "ℹ️ HELP MENU\n\n"
-            "• Chat AI → type message\n"
-            "• VIP → remove limit\n"
-            "• Status → check account"
-        )
+        await query.message.reply_text("Type anything to chat with AI.")
 
-# ================= CHAT HANDLER =================
+# ================= CHAT =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_text = update.message.text
@@ -75,22 +82,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_usage[user_id] = user_usage.get(user_id, 0) + 1
 
     if user_id not in VIP_USERS and user_usage[user_id] > FREE_LIMIT:
-        await update.message.reply_text("❌ Free limit reached. Upgrade to VIP.")
+        await update.message.reply_text("❌ Free limit reached.")
         return
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a smart, short, helpful Telegram assistant."},
+            {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": user_text}
-        ],
-        temperature=0.7,
-        max_tokens=300
+        ]
     )
 
     await update.message.reply_text(response.choices[0].message.content)
 
-# ================= BOT START =================
+# ================= RUN BOT =================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
@@ -98,4 +103,4 @@ app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 print("Bot running...")
-app.run_polling()	
+app.run_polling()
