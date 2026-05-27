@@ -160,8 +160,10 @@ response = client.chat.completions.create(
     ],
     max_tokens=150
 )
-    await update.message.reply_text(response.choices[0].message.content)
 
+await update.message.reply_text(
+    response.choices[0].message.content
+)
 # ================= RUN BOT =================
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
