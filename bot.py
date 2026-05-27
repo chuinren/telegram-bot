@@ -1,9 +1,7 @@
 import os
-import threading
 import sqlite3
-from flask import Flask, request
 import stripe
-
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
@@ -18,18 +16,18 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ================= FLASK =================
-app_web = Flask(__name__)
+app = Flask(__name__)
 
-@app_web.route("/")
+@app.route("/")
 def home():
-    return "AI Bot Running 24/7"
+    return "Bot Running 24/7"
 
-@app_web.route("/stripe-webhook", methods=["POST"])
-def stripe_webhook():
-    data = request.json
+@app.route("/stripe-webhook", methods=["POST"])
+def webhook():
+    payload = request.json
 
     try:
-        event = stripe.Event.construct_from(data, stripe.api_key)
+        event = stripe.Event.construct_from(payload, stripe.api_key)
 
         if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
@@ -40,12 +38,6 @@ def stripe_webhook():
         return str(e), 400
 
     return "OK", 200
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
-
-threading.Thread(target=run_web).start()
 
 # ================= DATABASE =================
 conn = sqlite3.connect("bot.db", check_same_thread=False)
@@ -86,8 +78,8 @@ def get_usage(uid):
     r = cursor.fetchone()
     return r[0] if r else 0
 
-# ================= STRIPE PAYMENT (RM15/month) =================
-def create_checkout_session(uid):
+# ================= STRIPE =================
+def create_checkout(uid):
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="payment",
@@ -95,9 +87,9 @@ def create_checkout_session(uid):
             "price_data": {
                 "currency": "usd",
                 "product_data": {
-                    "name": "VIP Access (RM15/month)"
+                    "name": "VIP Access RM15/month"
                 },
-                "unit_amount": 300  # ≈ RM15
+                "unit_amount": 300
             },
             "quantity": 1
         }],
@@ -107,7 +99,7 @@ def create_checkout_session(uid):
     )
     return session.url
 
-# ================= TELEGRAM HANDLERS =================
+# ================= TELEGRAM =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     create_user(uid)
@@ -119,26 +111,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🤖 AI BOT READY\n\nFree limit: 5 messages",
+        "🤖 AI BOT READY\nFree limit: 5 messages",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
-    uid = q.from_user.id
+    uid = query.from_user.id
     create_user(uid)
 
-    if q.data == "vip":
-        url = create_checkout_session(uid)
-        await q.message.reply_text(f"💰 Pay RM15/month:\n{url}")
+    if query.data == "vip":
+        url = create_checkout(uid)
+        await query.message.reply_text(f"💰 Pay here:\n{url}")
 
-    elif q.data == "status":
+    elif query.data == "status":
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
-        await q.message.reply_text(
-            f"Status: {status}\nUsage: {get_usage(uid)}"
-        )
+        await query.message.reply_text(f"Status: {status}\nUsage: {get_usage(uid)}")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
@@ -152,24 +142,25 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     add_usage(uid)
 
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": text}
-    ],
-    max_tokens=150
-)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=200
+    )
 
-await update.message.reply_text(
-    response.choices[0].message.content
-)
+    reply = response.choices[0].message.content
+
+    await update.message.reply_text(reply)
+
 # ================= RUN BOT =================
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app_bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(buttons))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+app_bot.add_handler(CommandHandler("start", start))
+app_bot.add_handler(CallbackQueryHandler(buttons))
+app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 print("Bot running...")
-app.run_polling()
+app_bot.run_polling()
