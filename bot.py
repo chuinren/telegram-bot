@@ -3,15 +3,11 @@ import sqlite3
 import stripe
 
 from flask import Flask, request
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-
 from openai import OpenAI
 
-# ==================================================
-# CONFIG
-# ==================================================
+# ================= CONFIG =================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -21,15 +17,11 @@ BASE_URL = os.getenv("BASE_URL")
 client = OpenAI(api_key=OPENAI_API_KEY)
 stripe.api_key = STRIPE_SECRET_KEY
 
-# ==================================================
-# FLASK APP
-# ==================================================
+# ================= FLASK =================
 
 app = Flask(__name__)
 
-# ==================================================
-# DATABASE
-# ==================================================
+# ================= DATABASE =================
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -55,9 +47,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ==================================================
-# USER SYSTEM
-# ==================================================
+# ================= DB FUNCTIONS =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -81,9 +71,7 @@ def get_usage(uid):
     row = cursor.fetchone()
     return row[0] if row else 0
 
-# ==================================================
-# MEMORY SYSTEM
-# ==================================================
+# ================= MEMORY =================
 
 def save_memory(uid, role, content):
     cursor.execute(
@@ -100,9 +88,7 @@ def load_memory(uid):
     rows = cursor.fetchall()
     return list(reversed(rows))
 
-# ==================================================
-# STRIPE PAYMENT
-# ==================================================
+# ================= STRIPE =================
 
 def create_checkout(uid):
     session = stripe.checkout.Session.create(
@@ -111,7 +97,7 @@ def create_checkout(uid):
         line_items=[{
             "price_data": {
                 "currency": "usd",
-                "product_data": {"name": "RTK AI VIP RM15"},
+                "product_data": {"name": "VIP AI RM15"},
                 "unit_amount": 300
             },
             "quantity": 1
@@ -122,19 +108,14 @@ def create_checkout(uid):
     )
     return session.url
 
-# ==================================================
-# AI ENGINE
-# ==================================================
+# ================= OPENAI =================
 
 def ask_ai(uid, text):
 
     history = load_memory(uid)
 
     messages = [
-        {
-            "role": "system",
-            "content": "You are RTK AI. Reply short, smart, and useful."
-        }
+        {"role": "system", "content": "You are a helpful AI assistant."}
     ]
 
     for role, content in history:
@@ -150,9 +131,11 @@ def ask_ai(uid, text):
 
     return response.choices[0].message.content
 
-# ==================================================
-# TELEGRAM START
-# ==================================================
+# ================= TELEGRAM APP =================
+
+telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# ---------------- START ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
@@ -164,13 +147,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🤖 RTK AI READY",
+        "🤖 AI BOT READY",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ==================================================
-# BUTTON HANDLER
-# ==================================================
+# ---------------- BUTTONS ----------------
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -185,21 +166,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "status":
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
-        usage = get_usage(uid)
-        await q.message.reply_text(f"{status}\nUsage: {usage}")
+        await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
 
-# ==================================================
-# CHAT HANDLER
-# ==================================================
+# ---------------- CHAT ----------------
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     uid = update.message.from_user.id
     text = update.message.text
 
     create_user(uid)
 
     if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
-        await update.message.reply_text("❌ Upgrade VIP RM15 to continue")
+        await update.message.reply_text("❌ Upgrade VIP RM15")
         return
 
     add_usage(uid)
@@ -212,36 +191,32 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
-# ==================================================
-# TELEGRAM APP
-# ==================================================
-
-telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+# ================= HANDLERS =================
 
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(buttons))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-# ==================================================
-# WEBHOOK (IMPORTANT FIXED)
-# ==================================================
+# ================= WEBHOOK =================
 
 @app.route("/telegram", methods=["POST"])
-def telegram_webhook():
+def webhook():
+
     data = request.get_json(force=True)
 
     update = Update.de_json(data, telegram_app.bot)
 
-    telegram_app.update_queue.put(update)
+    telegram_app.create_task(
+        telegram_app.process_update(update)
+    )
 
     return "OK", 200
 
-# ==================================================
-# STRIPE WEBHOOK
-# ==================================================
+# ================= STRIPE =================
 
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
+
     payload = request.json
 
     try:
@@ -257,24 +232,26 @@ def stripe_webhook():
 
     return "OK", 200
 
-# ==================================================
-# HOME
-# ==================================================
+# ================= HOME =================
 
 @app.route("/")
 def home():
-    return "RTK AI BOT RUNNING"
+    return "BOT RUNNING"
 
-# ==================================================
-# START SERVER (RENDER SAFE)
-# ==================================================
+# ================= STARTUP =================
+
+async def init():
+    await telegram_app.initialize()
+    await telegram_app.bot.set_webhook(
+        url=f"{BASE_URL}/telegram"
+    )
 
 if __name__ == "__main__":
-    print("BOT STARTED")
+
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(init())
 
     port = int(os.environ.get("PORT", 10000))
 
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)
