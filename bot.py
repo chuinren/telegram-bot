@@ -47,7 +47,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB FUNCTIONS =================
+# ================= DB =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -135,9 +135,10 @@ def ask_ai(uid, text):
 
 telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# ---------------- START ----------------
+# ================= START =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     uid = update.message.from_user.id
     create_user(uid)
 
@@ -151,9 +152,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ---------------- BUTTONS ----------------
+# ================= BUTTONS =================
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     q = update.callback_query
     await q.answer()
 
@@ -168,7 +170,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
         await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
 
-# ---------------- CHAT ----------------
+# ================= CHAT =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -200,7 +202,7 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 # ================= WEBHOOK =================
 
 @app.route("/telegram", methods=["POST"])
-def webhook():
+def telegram_webhook():
 
     data = request.get_json(force=True)
 
@@ -238,20 +240,15 @@ def stripe_webhook():
 def home():
     return "BOT RUNNING"
 
-# ================= STARTUP =================
-
-async def init():
-    await telegram_app.initialize()
-    await telegram_app.bot.set_webhook(
-        url=f"{BASE_URL}/telegram"
-    )
+# ================= MAIN (FIXED FOR PYTHON 3.14) =================
 
 if __name__ == "__main__":
 
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(init())
+    print("BOT STARTED")
 
     port = int(os.environ.get("PORT", 10000))
 
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
