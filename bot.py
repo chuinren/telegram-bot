@@ -1,29 +1,16 @@
 import os
 import sqlite3
-import asyncio
 import stripe
 
 from flask import Flask, request
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 from openai import OpenAI
 
 # ==================================================
-# ENV VARIABLES
+# CONFIG
 # ==================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -31,12 +18,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 BASE_URL = os.getenv("BASE_URL")
 
-# ==================================================
-# OPENAI + STRIPE
-# ==================================================
-
 client = OpenAI(api_key=OPENAI_API_KEY)
-
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ==================================================
@@ -49,14 +31,9 @@ app = Flask(__name__)
 # DATABASE
 # ==================================================
 
-conn = sqlite3.connect(
-    "bot.db",
-    check_same_thread=False
-)
-
+conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# USERS TABLE
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -65,7 +42,6 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# MEMORY TABLE
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,93 +56,48 @@ conn.commit()
 FREE_LIMIT = 5
 
 # ==================================================
-# USER FUNCTIONS
+# USER SYSTEM
 # ==================================================
 
 def create_user(uid):
-
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-        (uid,)
-    )
-
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
     conn.commit()
 
 def is_vip(uid):
-
-    cursor.execute(
-        "SELECT is_vip FROM users WHERE user_id=?",
-        (uid,)
-    )
-
+    cursor.execute("SELECT is_vip FROM users WHERE user_id=?", (uid,))
     row = cursor.fetchone()
-
     return row and row[0] == 1
 
 def activate_vip(uid):
-
-    cursor.execute(
-        "UPDATE users SET is_vip=1 WHERE user_id=?",
-        (uid,)
-    )
-
+    cursor.execute("UPDATE users SET is_vip=1 WHERE user_id=?", (uid,))
     conn.commit()
 
 def add_usage(uid):
-
-    cursor.execute(
-        "UPDATE users SET usage_count = usage_count + 1 WHERE user_id=?",
-        (uid,)
-    )
-
+    cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id=?", (uid,))
     conn.commit()
 
 def get_usage(uid):
-
-    cursor.execute(
-        "SELECT usage_count FROM users WHERE user_id=?",
-        (uid,)
-    )
-
+    cursor.execute("SELECT usage_count FROM users WHERE user_id=?", (uid,))
     row = cursor.fetchone()
-
-    if row:
-        return row[0]
-
-    return 0
+    return row[0] if row else 0
 
 # ==================================================
 # MEMORY SYSTEM
 # ==================================================
 
 def save_memory(uid, role, content):
-
     cursor.execute(
-        """
-        INSERT INTO memory
-        (user_id, role, content)
-        VALUES (?, ?, ?)
-        """,
+        "INSERT INTO memory (user_id, role, content) VALUES (?, ?, ?)",
         (uid, role, content)
     )
-
     conn.commit()
 
 def load_memory(uid):
-
     cursor.execute(
-        """
-        SELECT role, content
-        FROM memory
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 10
-        """,
+        "SELECT role, content FROM memory WHERE user_id=? ORDER BY id DESC LIMIT 10",
         (uid,)
     )
-
     rows = cursor.fetchall()
-
     return list(reversed(rows))
 
 # ==================================================
@@ -174,33 +105,25 @@ def load_memory(uid):
 # ==================================================
 
 def create_checkout(uid):
-
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
         mode="payment",
-        line_items=[
-            {
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {
-                        "name": "RTK AI VIP RM15"
-                    },
-                    "unit_amount": 300
-                },
-                "quantity": 1
-            }
-        ],
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": "RTK AI VIP RM15"},
+                "unit_amount": 300
+            },
+            "quantity": 1
+        }],
         success_url=BASE_URL,
         cancel_url=BASE_URL,
-        metadata={
-            "user_id": str(uid)
-        }
+        metadata={"user_id": str(uid)}
     )
-
     return session.url
 
 # ==================================================
-# AI SYSTEM
+# AI ENGINE
 # ==================================================
 
 def ask_ai(uid, text):
@@ -210,26 +133,14 @@ def ask_ai(uid, text):
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are RTK AI. "
-                "Reply clearly, intelligently, and briefly."
-            )
+            "content": "You are RTK AI. Reply short, smart, and useful."
         }
     ]
 
-    # MEMORY
     for role, content in history:
+        messages.append({"role": role, "content": content})
 
-        messages.append({
-            "role": role,
-            "content": content
-        })
-
-    # USER MESSAGE
-    messages.append({
-        "role": "user",
-        "content": text
-    })
+    messages.append({"role": "user", "content": text})
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -240,35 +151,21 @@ def ask_ai(uid, text):
     return response.choices[0].message.content
 
 # ==================================================
-# /START COMMAND
+# TELEGRAM START
 # ==================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     uid = update.message.from_user.id
-
     create_user(uid)
 
     keyboard = [
-        [
-            InlineKeyboardButton(
-                "💎 VIP RM15",
-                callback_data="vip"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📊 Status",
-                callback_data="status"
-            )
-        ]
+        [InlineKeyboardButton("💎 VIP RM15", callback_data="vip")],
+        [InlineKeyboardButton("📊 Status", callback_data="status")]
     ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
         "🤖 RTK AI READY",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ==================================================
@@ -276,111 +173,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
 
-    query = update.callback_query
-
-    await query.answer()
-
-    uid = query.from_user.id
-
+    uid = q.from_user.id
     create_user(uid)
 
-    # VIP BUTTON
-    if query.data == "vip":
+    if q.data == "vip":
+        url = create_checkout(uid)
+        await q.message.reply_text(f"💳 Pay here:\n{url}")
 
-        checkout_url = create_checkout(uid)
-
-        await query.message.reply_text(
-            f"💳 Pay VIP here:\n{checkout_url}"
-        )
-
-    # STATUS BUTTON
-    elif query.data == "status":
-
+    elif q.data == "status":
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
-
         usage = get_usage(uid)
-
-        await query.message.reply_text(
-            f"📊 Status: {status}\n"
-            f"Messages Used: {usage}"
-        )
+        await q.message.reply_text(f"{status}\nUsage: {usage}")
 
 # ==================================================
-# CHAT SYSTEM
+# CHAT HANDLER
 # ==================================================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     uid = update.message.from_user.id
-
     text = update.message.text
 
     create_user(uid)
 
-    # FREE LIMIT
-    if not is_vip(uid):
-
-        if get_usage(uid) >= FREE_LIMIT:
-
-            await update.message.reply_text(
-                "❌ Free limit reached.\n"
-                "Upgrade VIP RM15."
-            )
-
-            return
+    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+        await update.message.reply_text("❌ Upgrade VIP RM15 to continue")
+        return
 
     add_usage(uid)
 
-    # SAVE USER MESSAGE
     save_memory(uid, "user", text)
 
-    # AI REPLY
     reply = ask_ai(uid, text)
 
-    # SAVE AI MESSAGE
     save_memory(uid, "assistant", reply)
 
     await update.message.reply_text(reply)
 
 # ==================================================
-# TELEGRAM APPLICATION
+# TELEGRAM APP
 # ==================================================
 
-telegram_app = Application.builder().token(
-    TELEGRAM_TOKEN
-).build()
+telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-telegram_app.add_handler(
-    CommandHandler("start", start)
-)
-
-telegram_app.add_handler(
-    CallbackQueryHandler(buttons)
-)
-
-telegram_app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        chat
-    )
-)
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CallbackQueryHandler(buttons))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 # ==================================================
-# TELEGRAM WEBHOOK
+# WEBHOOK (IMPORTANT FIXED)
 # ==================================================
 
 @app.route("/telegram", methods=["POST"])
-async def telegram_webhook():
-
+def telegram_webhook():
     data = request.get_json(force=True)
 
-    update = Update.de_json(
-        data,
-        telegram_app.bot
-    )
+    update = Update.de_json(data, telegram_app.bot)
 
-    await telegram_app.process_update(update)
+    telegram_app.update_queue.put(update)
 
     return "OK", 200
 
@@ -390,70 +242,37 @@ async def telegram_webhook():
 
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
-
     payload = request.json
 
     try:
-
-        event = stripe.Event.construct_from(
-            payload,
-            stripe.api_key
-        )
+        event = stripe.Event.construct_from(payload, stripe.api_key)
 
         if event["type"] == "checkout.session.completed":
-
             session = event["data"]["object"]
-
-            user_id = int(
-                session["metadata"]["user_id"]
-            )
-
+            user_id = int(session["metadata"]["user_id"])
             activate_vip(user_id)
 
     except Exception as e:
-
         return str(e), 400
 
     return "OK", 200
 
 # ==================================================
-# HOME PAGE
+# HOME
 # ==================================================
 
 @app.route("/")
 def home():
-
-    return "RTK AI SAAS BOT RUNNING"
-
-# ==================================================
-# STARTUP FUNCTION
-# ==================================================
-
-async def startup():
-
-    await telegram_app.initialize()
-
-    webhook_url = f"{BASE_URL}/telegram"
-
-    await telegram_app.bot.set_webhook(
-        url=webhook_url
-    )
+    return "RTK AI BOT RUNNING"
 
 # ==================================================
-# MAIN
+# START SERVER (RENDER SAFE)
 # ==================================================
 
 if __name__ == "__main__":
+    print("BOT STARTED")
 
-    asyncio.get_event_loop().run_until_complete(
-        startup()
-    )
-
-    print("RTK AI WEBHOOK RUNNING")
-
-    port = int(
-        os.environ.get("PORT", 10000)
-    )
+    port = int(os.environ.get("PORT", 10000))
 
     app.run(
         host="0.0.0.0",
