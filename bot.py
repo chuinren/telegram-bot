@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import stripe
@@ -27,7 +28,7 @@ stripe.api_key = STRIPE_SECRET_KEY
 
 app = Flask(__name__)
 
-# ================= DB =================
+# ================= DATABASE =================
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -53,7 +54,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB FUNCTIONS =================
+# ================= DB =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -93,7 +94,7 @@ def load_memory(uid):
 def ask_ai(uid, text):
     history = load_memory(uid)
 
-    messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
+    messages = [{"role": "system", "content": "You are a helpful assistant."}]
 
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -131,8 +132,6 @@ def create_checkout(uid):
 # ================= TELEGRAM APP =================
 
 telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-# IMPORTANT (NO CRASH INIT)
 telegram_app.initialize()
 
 # ================= HANDLERS =================
@@ -197,18 +196,16 @@ telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(buttons))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-# ================= WEBHOOK =================
+# ================= WEBHOOK (FINAL FIX) =================
 
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
     try:
         data = request.get_json(force=True)
-
         update = Update.de_json(data, telegram_app.bot)
 
-        # SAFE async execution (NO crash on Render)
-        import asyncio
-        asyncio.run(telegram_app.process_update(update))
+        # 🔥 SAFE DISPATCH (NO async crash, NO queue, NO loop)
+        telegram_app.process_update(update)
 
     except Exception as e:
         print("WEBHOOK ERROR:", e)
