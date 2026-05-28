@@ -17,17 +17,17 @@ from openai import OpenAI
 
 # ================= CONFIG =================
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-STRIPE_KEY = os.getenv("STRIPE_SECRET_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 BASE_URL = os.getenv("BASE_URL")
 
-client = OpenAI(api_key=OPENAI_KEY)
-stripe.api_key = STRIPE_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
+stripe.api_key = STRIPE_SECRET_KEY
 
 app = Flask(__name__)
 
-# ================= DATABASE =================
+# ================= DB =================
 
 conn = sqlite3.connect("bot.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -53,7 +53,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB =================
+# ================= DB FUNCTIONS =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -93,7 +93,7 @@ def load_memory(uid):
 def ask_ai(uid, text):
     history = load_memory(uid)
 
-    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
 
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -130,7 +130,10 @@ def create_checkout(uid):
 
 # ================= TELEGRAM APP =================
 
-telegram_app = Application.builder().token(TOKEN).build()
+telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# IMPORTANT (NO CRASH INIT)
+telegram_app.initialize()
 
 # ================= HANDLERS =================
 
@@ -164,24 +167,29 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(f"{status} | Usage: {get_usage(uid)}")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    text = update.message.text
+    try:
+        uid = update.message.from_user.id
+        text = update.message.text
 
-    create_user(uid)
+        create_user(uid)
 
-    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
-        await update.message.reply_text("Upgrade VIP")
-        return
+        if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+            await update.message.reply_text("Upgrade VIP")
+            return
 
-    add_usage(uid)
+        add_usage(uid)
 
-    save_memory(uid, "user", text)
+        save_memory(uid, "user", text)
 
-    reply = ask_ai(uid, text)
+        reply = ask_ai(uid, text)
 
-    save_memory(uid, "assistant", reply)
+        save_memory(uid, "assistant", reply)
 
-    await update.message.reply_text(reply)
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        print("CHAT ERROR:", e)
+        await update.message.reply_text("Error occurred.")
 
 # ================= REGISTER =================
 
@@ -192,13 +200,18 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 # ================= WEBHOOK =================
 
 @app.route("/telegram", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
+def telegram_webhook():
+    try:
+        data = request.get_json(force=True)
 
-    update = Update.de_json(data, telegram_app.bot)
+        update = Update.de_json(data, telegram_app.bot)
 
-    # ✅ IMPORTANT: correct dispatch method
-    telegram_app.update_queue.put_nowait(update)
+        # SAFE async execution (NO crash on Render)
+        import asyncio
+        asyncio.run(telegram_app.process_update(update))
+
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
 
     return "OK", 200
 
