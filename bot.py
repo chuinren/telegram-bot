@@ -1,10 +1,18 @@
 import os
 import sqlite3
 import stripe
-
 from flask import Flask, request
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters
+)
+
 from openai import OpenAI
 
 # ================= CONFIG =================
@@ -16,8 +24,6 @@ BASE_URL = os.getenv("BASE_URL")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 stripe.api_key = STRIPE_SECRET_KEY
-
-# ================= FLASK =================
 
 app = Flask(__name__)
 
@@ -47,7 +53,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB FUNCTIONS =================
+# ================= DB =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -135,9 +141,12 @@ def ask_ai(uid, text):
 
 telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+# IMPORTANT: initialize app
+telegram_app.initialize()
+
 # ================= HANDLERS =================
 
-async def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     create_user(uid)
 
@@ -151,7 +160,7 @@ async def start(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def buttons(update, context):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
@@ -166,7 +175,7 @@ async def buttons(update, context):
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
         await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
 
-async def chat(update, context):
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         uid = update.message.from_user.id
         text = update.message.text
@@ -189,9 +198,9 @@ async def chat(update, context):
 
     except Exception as e:
         print("CHAT ERROR:", e)
-        await update.message.reply_text("Error happened, try again.")
+        await update.message.reply_text("Error occurred.")
 
-# ================= REGISTER HANDLERS =================
+# ================= REGISTER =================
 
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(buttons))
@@ -201,12 +210,12 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
-
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
 
-        telegram_app.update_queue.put_nowait(update)
+        # IMPORTANT FIX (NO queue, NO crash)
+        telegram_app.process_update(update)
 
     except Exception as e:
         print("WEBHOOK ERROR:", e)
@@ -217,7 +226,6 @@ def telegram_webhook():
 
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
-
     payload = request.json
 
     event = stripe.Event.construct_from(payload, stripe.api_key)
