@@ -1,7 +1,7 @@
-
 import os
 import sqlite3
 import stripe
+import asyncio
 from flask import Flask, request
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -54,7 +54,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB =================
+# ================= DB FUNCTIONS =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -196,7 +196,7 @@ telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(buttons))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-# ================= WEBHOOK (FINAL FIX) =================
+# ================= WEBHOOK (FIXED ASYNC) =================
 
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -204,8 +204,12 @@ def telegram_webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
 
-        # 🔥 SAFE DISPATCH (NO async crash, NO queue, NO loop)
-        telegram_app.process_update(update)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        loop.run_until_complete(telegram_app.process_update(update))
+
+        loop.close()
 
     except Exception as e:
         print("WEBHOOK ERROR:", e)
