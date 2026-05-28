@@ -10,20 +10,20 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters
+    filters,
 )
 
 from openai import OpenAI
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+STRIPE_KEY = os.getenv("STRIPE_SECRET_KEY")
 BASE_URL = os.getenv("BASE_URL")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-stripe.api_key = STRIPE_SECRET_KEY
+client = OpenAI(api_key=OPENAI_KEY)
+stripe.api_key = STRIPE_KEY
 
 app = Flask(__name__)
 
@@ -64,10 +64,6 @@ def is_vip(uid):
     row = cursor.fetchone()
     return row and row[0] == 1
 
-def activate_vip(uid):
-    cursor.execute("UPDATE users SET is_vip=1 WHERE user_id=?", (uid,))
-    conn.commit()
-
 def add_usage(uid):
     cursor.execute("UPDATE users SET usage_count = usage_count + 1 WHERE user_id=?", (uid,))
     conn.commit()
@@ -77,22 +73,40 @@ def get_usage(uid):
     row = cursor.fetchone()
     return row[0] if row else 0
 
-# ================= MEMORY =================
-
 def save_memory(uid, role, content):
     cursor.execute(
         "INSERT INTO memory (user_id, role, content) VALUES (?, ?, ?)",
-        (uid, role, content)
+        (uid, role, content),
     )
     conn.commit()
 
 def load_memory(uid):
     cursor.execute(
         "SELECT role, content FROM memory WHERE user_id=? ORDER BY id DESC LIMIT 10",
-        (uid,)
+        (uid,),
     )
     rows = cursor.fetchall()
     return list(reversed(rows))
+
+# ================= OPENAI =================
+
+def ask_ai(uid, text):
+    history = load_memory(uid)
+
+    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+
+    for role, content in history:
+        messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": text})
+
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        max_tokens=250,
+    )
+
+    return res.choices[0].message.content
 
 # ================= STRIPE =================
 
@@ -103,46 +117,20 @@ def create_checkout(uid):
         line_items=[{
             "price_data": {
                 "currency": "usd",
-                "product_data": {"name": "VIP AI RM15"},
-                "unit_amount": 300
+                "product_data": {"name": "VIP AI"},
+                "unit_amount": 300,
             },
-            "quantity": 1
+            "quantity": 1,
         }],
         success_url=BASE_URL,
         cancel_url=BASE_URL,
-        metadata={"user_id": str(uid)}
+        metadata={"user_id": str(uid)},
     )
     return session.url
 
-# ================= OPENAI =================
-
-def ask_ai(uid, text):
-
-    history = load_memory(uid)
-
-    messages = [
-        {"role": "system", "content": "You are a helpful AI assistant."}
-    ]
-
-    for role, content in history:
-        messages.append({"role": role, "content": content})
-
-    messages.append({"role": "user", "content": text})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=250
-    )
-
-    return response.choices[0].message.content
-
 # ================= TELEGRAM APP =================
 
-telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-# IMPORTANT: initialize app
-telegram_app.initialize()
+telegram_app = Application.builder().token(TOKEN).build()
 
 # ================= HANDLERS =================
 
@@ -151,13 +139,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user(uid)
 
     keyboard = [
-        [InlineKeyboardButton("💎 VIP RM15", callback_data="vip")],
-        [InlineKeyboardButton("📊 Status", callback_data="status")]
+        [InlineKeyboardButton("💎 VIP", callback_data="vip")],
+        [InlineKeyboardButton("📊 Status", callback_data="status")],
     ]
 
     await update.message.reply_text(
-        "🤖 AI BOT READY",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "🤖 Bot Ready",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,36 +157,31 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "vip":
         url = create_checkout(uid)
-        await q.message.reply_text(f"💳 Pay here:\n{url}")
+        await q.message.reply_text(url)
 
     elif q.data == "status":
-        status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
-        await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
+        status = "VIP 💎" if is_vip(uid) else "FREE"
+        await q.message.reply_text(f"{status} | Usage: {get_usage(uid)}")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        uid = update.message.from_user.id
-        text = update.message.text
+    uid = update.message.from_user.id
+    text = update.message.text
 
-        create_user(uid)
+    create_user(uid)
 
-        if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
-            await update.message.reply_text("❌ Upgrade VIP RM15")
-            return
+    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+        await update.message.reply_text("Upgrade VIP")
+        return
 
-        add_usage(uid)
+    add_usage(uid)
 
-        save_memory(uid, "user", text)
+    save_memory(uid, "user", text)
 
-        reply = ask_ai(uid, text)
+    reply = ask_ai(uid, text)
 
-        save_memory(uid, "assistant", reply)
+    save_memory(uid, "assistant", reply)
 
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-        print("CHAT ERROR:", e)
-        await update.message.reply_text("Error occurred.")
+    await update.message.reply_text(reply)
 
 # ================= REGISTER =================
 
@@ -209,31 +192,13 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 # ================= WEBHOOK =================
 
 @app.route("/telegram", methods=["POST"])
-def telegram_webhook():
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, telegram_app.bot)
+def webhook():
+    data = request.get_json(force=True)
 
-        # IMPORTANT FIX (NO queue, NO crash)
-        telegram_app.process_update(update)
+    update = Update.de_json(data, telegram_app.bot)
 
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-    return "OK", 200
-
-# ================= STRIPE WEBHOOK =================
-
-@app.route("/stripe-webhook", methods=["POST"])
-def stripe_webhook():
-    payload = request.json
-
-    event = stripe.Event.construct_from(payload, stripe.api_key)
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        user_id = int(session["metadata"]["user_id"])
-        activate_vip(user_id)
+    # ✅ IMPORTANT: correct dispatch method
+    telegram_app.update_queue.put_nowait(update)
 
     return "OK", 200
 
