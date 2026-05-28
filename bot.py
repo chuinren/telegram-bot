@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from openai import OpenAI
 
-# ================= ENV =================
+# ================= CONFIG =================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -114,7 +114,9 @@ def ask_ai(uid, text):
 
     history = load_memory(uid)
 
-    messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
+    messages = [
+        {"role": "system", "content": "You are a helpful AI assistant."}
+    ]
 
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -165,24 +167,29 @@ async def buttons(update, context):
         await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
 
 async def chat(update, context):
-    uid = update.message.from_user.id
-    text = update.message.text
+    try:
+        uid = update.message.from_user.id
+        text = update.message.text
 
-    create_user(uid)
+        create_user(uid)
 
-    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
-        await update.message.reply_text("❌ Upgrade VIP RM15")
-        return
+        if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+            await update.message.reply_text("❌ Upgrade VIP RM15")
+            return
 
-    add_usage(uid)
+        add_usage(uid)
 
-    save_memory(uid, "user", text)
+        save_memory(uid, "user", text)
 
-    reply = ask_ai(uid, text)
+        reply = ask_ai(uid, text)
 
-    save_memory(uid, "assistant", reply)
+        save_memory(uid, "assistant", reply)
 
-    await update.message.reply_text(reply)
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        print("CHAT ERROR:", e)
+        await update.message.reply_text("Error happened, try again.")
 
 # ================= REGISTER HANDLERS =================
 
@@ -228,7 +235,7 @@ def stripe_webhook():
 def home():
     return "BOT RUNNING"
 
-# ================= START SERVER =================
+# ================= START =================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
