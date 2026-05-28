@@ -133,7 +133,19 @@ def ask_ai(uid, text):
 
 # ================= TELEGRAM APP =================
 
-telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
+
+        telegram_app.process_update(update)
+
+        return "OK", 200
+
+    except Exception as e:
+        print("ERROR:", e)
+        return "OK", 200
 
 # ================= HANDLERS =================
 
