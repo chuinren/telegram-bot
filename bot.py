@@ -1,187 +1,113 @@
 import os
-import threading
-from flask import Flask
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
-
+import sqlite3
+from flask import Flask, request
+import requests
 from openai import OpenAI
 
-# ================= ENV =================
+# ================= CONFIG =================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+STRIPE_LINK = os.getenv("STRIPE_LINK")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-# ================= FLASK =================
+app = Flask(__name__)
 
-app_web = Flask(__name__)
+# ================= DB =================
 
-@app_web.route("/")
-def home():
-    return "Bot is running"
+conn = sqlite3.connect("bot.db", check_same_thread=False)
+cursor = conn.cursor()
 
-def run_web():
-    app_web.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
-    )
-
-# ================= BOT DATA =================
-
-VIP_USERS = set()
-user_usage = {}
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    vip INTEGER DEFAULT 0,
+    usage_count INTEGER DEFAULT 0
+)
+""")
+conn.commit()
 
 FREE_LIMIT = 5
 
-STRIPE_LINK = "https://buy.stripe.com/aFadR84afcNQ2N59dSgA802"
+# ================= TELEGRAM API =================
 
-# ================= START =================
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    requests.post(url, json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def send_buttons(chat_id):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    keyboard = [
-        [InlineKeyboardButton("💬 Chat AI", callback_data="chat")],
-        [InlineKeyboardButton("💰 VIP", callback_data="vip")],
-        [InlineKeyboardButton("📊 Status", callback_data="status")],
-        [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
-    ]
-
-    await update.message.reply_text(
-        "🤖 AI BOT READY",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# ================= BUTTONS =================
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-
-    if query.data == "vip":
-
-        keyboard = [
-            [InlineKeyboardButton("💳 Pay VIP", url=STRIPE_LINK)],
-            [InlineKeyboardButton("✅ I Paid", callback_data="paid")]
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "💎 VIP", "callback_data": "vip"}],
+            [{"text": "📊 Status", "callback_data": "status"}],
         ]
+    }
 
-        await query.message.reply_text(
-            "💎 VIP PLAN",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    requests.post(url, json={
+        "chat_id": chat_id,
+        "text": "Choose option:",
+        "reply_markup": keyboard
+    })
 
-    elif query.data == "paid":
+# ================= AI =================
 
-        VIP_USERS.add(user_id)
-
-        await query.message.reply_text(
-            "✅ VIP Activated!"
-        )
-
-    elif query.data == "status":
-
-        status = "VIP 💎" if user_id in VIP_USERS else "FREE 🆓"
-
-        await query.message.reply_text(
-            f"Status: {status}\nUsage: {user_usage.get(user_id, 0)}"
-        )
-
-    elif query.data == "help":
-
-        await query.message.reply_text(
-            "Send any message to chat with AI."
-        )
-
-# ================= CHAT =================
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    try:
-
-        user_id = update.message.from_user.id
-        user_text = update.message.text
-
-        user_usage[user_id] = user_usage.get(user_id, 0) + 1
-
-        # FREE LIMIT
-        if user_id not in VIP_USERS:
-
-            if user_usage[user_id] > FREE_LIMIT:
-
-                await update.message.reply_text(
-                    "❌ Free limit reached.\nUpgrade VIP."
-                )
-
-                return
-
-        # OPENAI
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant."
-                },
-                {
-                    "role": "user",
-                    "content": user_text
-                }
-            ]
-        )
-
-        reply = response.choices[0].message.content
-
-        await update.message.reply_text(reply)
-
-    except Exception as e:
-
-        print("CHAT ERROR:", e)
-
-        await update.message.reply_text(
-            "❌ Error occurred."
-        )
-
-# ================= TELEGRAM APP =================
-
-telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-telegram_app.add_handler(
-    CommandHandler("start", start)
-)
-
-telegram_app.add_handler(
-    CallbackQueryHandler(button_handler)
-)
-
-telegram_app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_message
+def ask_ai(text):
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": text}
+        ]
     )
-)
+    return res.choices[0].message.content
 
-# ================= START =================
+# ================= WEBHOOK =================
 
-print("Bot running...")
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
 
-# Flask for Render health check
-threading.Thread(
-    target=run_web,
-    daemon=True
-).start()
+    data = request.get_json()
 
-# Telegram polling
-telegram_app.run_polling(
-    drop_pending_updates=True
-)
+    # ---------------- MESSAGE ----------------
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
+
+        if text == "/start":
+            send_buttons(chat_id)
+            return "OK", 200
+
+        reply = ask_ai(text)
+        send_message(chat_id, reply)
+
+    # ---------------- CALLBACK ----------------
+    if "callback_query" in data:
+        cq = data["callback_query"]
+        chat_id = cq["message"]["chat"]["id"]
+        data_cb = cq["data"]
+
+        if data_cb == "vip":
+            send_message(chat_id, f"Pay here: {STRIPE_LINK}")
+
+        elif data_cb == "status":
+            send_message(chat_id, "You are FREE user 🆓")
+
+    return "OK", 200
+
+# ================= HOME =================
+
+@app.route("/")
+def home():
+    return "BOT RUNNING"
+
+# ================= RUN =================
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
