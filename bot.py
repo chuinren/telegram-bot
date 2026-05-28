@@ -230,39 +230,29 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     uid = update.message.from_user.id
-
     text = update.message.text
 
     create_user(uid)
 
-    # FREE LIMIT
-    if not is_vip(uid):
-
-        if get_usage(uid) >= FREE_LIMIT:
-
-            await update.message.reply_text(
-                "❌ Free limit reached.\nUpgrade VIP RM15."
-            )
-
-            return
+    if not is_vip(uid) and get_usage(uid) >= FREE_LIMIT:
+        await update.message.reply_text("❌ Free limit reached. Upgrade VIP RM15/month.")
+        return
 
     add_usage(uid)
 
-    # OPENAI RESPONSE
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": text}
-    ],
-    max_tokens=200
-)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=200
+    )
 
-reply = response.choices[0].message.content
+    reply = response.choices[0].message.content
 
-await update.message.reply_text(reply)
+    await update.message.reply_text(reply)
 
 # ==================================================
 # TELEGRAM APP
