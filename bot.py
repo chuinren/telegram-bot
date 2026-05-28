@@ -201,7 +201,7 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 # ================= WEBHOOK =================
 
-@app.route("/telegram"), methods=["POST"])
+@app.route("/telegram", methods=["POST"])
 def telegram_webhook():
 
     data = request.get_json(force=True)
