@@ -135,10 +135,9 @@ def ask_ai(uid, text):
 
 telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# ================= START =================
+# ================= HANDLERS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     uid = update.message.from_user.id
     create_user(uid)
 
@@ -152,10 +151,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= BUTTONS =================
-
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     q = update.callback_query
     await q.answer()
 
@@ -169,8 +165,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "status":
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
         await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
-
-# ================= CHAT =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -193,7 +187,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply)
 
-# ================= HANDLERS =================
+# ================= REGISTER HANDLERS =================
 
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CallbackQueryHandler(buttons))
@@ -205,12 +199,10 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 def telegram_webhook():
 
     data = request.get_json(force=True)
-
     update = Update.de_json(data, telegram_app.bot)
 
-    telegram_app.create_task(
-        telegram_app.process_update(update)
-    )
+    # ✅ SAFE METHOD (NO asyncio, NO crash)
+    telegram_app.update_queue.put_nowait(update)
 
     return "OK", 200
 
@@ -221,16 +213,12 @@ def stripe_webhook():
 
     payload = request.json
 
-    try:
-        event = stripe.Event.construct_from(payload, stripe.api_key)
+    event = stripe.Event.construct_from(payload, stripe.api_key)
 
-        if event["type"] == "checkout.session.completed":
-            session = event["data"]["object"]
-            user_id = int(session["metadata"]["user_id"])
-            activate_vip(user_id)
-
-    except Exception as e:
-        return str(e), 400
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = int(session["metadata"]["user_id"])
+        activate_vip(user_id)
 
     return "OK", 200
 
@@ -240,15 +228,10 @@ def stripe_webhook():
 def home():
     return "BOT RUNNING"
 
-# ================= MAIN (FIXED FOR PYTHON 3.14) =================
+# ================= START =================
 
 if __name__ == "__main__":
 
-    print("BOT STARTED")
-
     port = int(os.environ.get("PORT", 10000))
 
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)
