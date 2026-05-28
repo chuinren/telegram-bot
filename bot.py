@@ -4,10 +4,10 @@ import stripe
 
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from openai import OpenAI
 
-# ================= CONFIG =================
+# ================= ENV =================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -47,7 +47,7 @@ conn.commit()
 
 FREE_LIMIT = 5
 
-# ================= DB =================
+# ================= DB FUNCTIONS =================
 
 def create_user(uid):
     cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (uid,))
@@ -114,9 +114,7 @@ def ask_ai(uid, text):
 
     history = load_memory(uid)
 
-    messages = [
-        {"role": "system", "content": "You are a helpful AI assistant."}
-    ]
+    messages = [{"role": "system", "content": "You are a helpful AI assistant."}]
 
     for role, content in history:
         messages.append({"role": role, "content": content})
@@ -133,23 +131,11 @@ def ask_ai(uid, text):
 
 # ================= TELEGRAM APP =================
 
-@app.route("/telegram", methods=["POST"])
-def telegram_webhook():
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, telegram_app.bot)
-
-        telegram_app.process_update(update)
-
-        return "OK", 200
-
-    except Exception as e:
-        print("ERROR:", e)
-        return "OK", 200
+telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # ================= HANDLERS =================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     uid = update.message.from_user.id
     create_user(uid)
 
@@ -163,7 +149,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buttons(update, context):
     q = update.callback_query
     await q.answer()
 
@@ -178,8 +164,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "VIP 💎" if is_vip(uid) else "FREE 🆓"
         await q.message.reply_text(f"{status}\nUsage: {get_usage(uid)}")
 
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
+async def chat(update, context):
     uid = update.message.from_user.id
     text = update.message.text
 
@@ -210,15 +195,18 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
 
-    data = request.get_json(force=True)
-    update = Update.de_json(data, telegram_app.bot)
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
 
-    # ✅ SAFE METHOD (NO asyncio, NO crash)
-    telegram_app.update_queue.put_nowait(update)
+        telegram_app.update_queue.put_nowait(update)
+
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
 
     return "OK", 200
 
-# ================= STRIPE =================
+# ================= STRIPE WEBHOOK =================
 
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
@@ -240,10 +228,8 @@ def stripe_webhook():
 def home():
     return "BOT RUNNING"
 
-# ================= START =================
+# ================= START SERVER =================
 
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 10000))
-
     app.run(host="0.0.0.0", port=port)
