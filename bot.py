@@ -251,24 +251,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_usage(uid)
 
     # OPENAI RESPONSE
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a helpful assistant."
-            },
-            {
-                "role": "user",
-                "content": text
-            }
-        ],
-        max_tokens=200
-    )
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": text}
+    ],
+    max_tokens=200
+)
 
-    reply = response.choices[0].message.content
+reply = response.choices[0].message.content
 
-    await update.message.reply_text(reply)
+await update.message.reply_text(reply)
 
 # ==================================================
 # TELEGRAM APP
